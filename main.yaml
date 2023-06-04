@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: This template creates two public and private subnets within a VPC
+
+Parameters:
+  AdminIPAddress:
+    Type: String
+
+  VpcCIDR:
+    Default: 10.0.0.0/16
+    Description: IP range for VPC
+    Type: String
+
+  PublicSubnetCIDR:
+    Default: 10.0.1.0/24
+    Description: IP range for public subnet
+    Type: String
+
+  PrivateSubnetCIDR:
+    Default: 10.0.2.0/24
+    Description: IP range for private subnet
+    Type: String
+
+  InstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+    Description: Instance size
+
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: vpc_cloudformation2
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Test IGN
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public subnet
+      VpcId: !Ref VPC
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Public route Table
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PrivateSubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Private subnet
+      VpcId: !Ref VPC
+
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SSH Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: SSH Security Group
+      VpcId: !Ref VPC
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Private Route Table
+      VpcId: !Ref VPC
+
+  PrivateRouteToInternet:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  WebServerSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security group for SSH and HTTP access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIPAddress
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AdminIPAddress
+
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0a606d8395a538502
+      InstanceType: t2.micro
+      KeyName: demo-key-aag
+      SecurityGroupIds:
+        - !Ref WebServerSSG 
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: WebServer-demo
+      UserData: 
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash
+            echo "Hello, CloudFormation!" > /welcome.txt
+            yum install docker -y
+            systemctl enable docker.service
+            systemctl start docker.service
+            docker run --detach -p 8080:8080 -p 9090:9090 -p 80:8888 -e TZ=Europe/Amsterdam webgoat/goatandwolf:latest
+Outputs:
+  InstancePublicIP:
+    Value: !GetAtt WebServer.PublicIp
+    Description: WebServer Public IP
